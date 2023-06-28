@@ -16,13 +16,13 @@ MIDI_CREATE_DEFAULT_INSTANCE();
 #define MUX_2_OUT_PIN 9
 #define MUX_3_OUT_PIN 10
 
-bool debug = 1;
-int maxPressTime = 350;
+bool debug = 0;
+int maxPressTime = 100;
 int minVelocity = 8;
 int maxVelocity = 127;
 int midiChannel = 1;
 
-const int numRows = 2;
+const int numRows = 22;
 const int numCols = 8;  // Now we have 8 columns
 
 bool pressed[88] = {false};
@@ -64,6 +64,12 @@ int readMux(int row) {
   return val;
 }
 
+int midiFromColumnRow(int c, int r) {
+  // subtract by one for SI
+  int midi = (numCols * (r/2)) + c;
+  return midi;
+}
+
 
 void setup() {
   if(debug) {
@@ -99,30 +105,31 @@ void loop() {
     for (int r = 0; r < numRows; ++r) {
 //      bool isConnected = digitalRead(rows[r]) == LOW;
       bool isConnected = readMux(r) == LOW;
-      if(debug && isConnected) {
-        Serial.print("Key connected: ");
-        Serial.print(c);
-        Serial.print("_");
-        Serial.print(r);
-        Serial.println(" ");
-      }
+//      if(debug && isConnected) {
+//        Serial.print("Key connected: ");
+//        Serial.print(c);
+//        Serial.print("_");
+//        Serial.print(r);
+//        Serial.println(" ");
+//      }
       bool isDown = r % 2 == 1;  // if r is odd, it's an SI (second input).  Remember that we start at 0
       bool isPressed = pressed[(numCols * (r/2)) + c] == true;
 
       // keypress starts
-      if (isConnected && !isPressed && !isDown && !pressStart[(numCols * (r/2)) + c]) {
+
+      if (isConnected && !isPressed && !isDown && !pressStart[midiFromColumnRow(c, r)]) {
         if (debug) {
           Serial.print("start pressing ");
           Serial.println(r);
-          Serial.print("... calculating (numCols * (r)/2) + c: ");
-          Serial.println((numCols * (r/2)) + c);
+          Serial.print("... calculating (numCols * (r/2) + c: ");
+          Serial.println(midiFromColumnRow(c, r));
         }
-        pressStart[(numCols * (r/2)) + c] = millis();
+        pressStart[midiFromColumnRow(c, r)] = millis();
       }
 
       // key is now fully pressed
-      if (isConnected && !pressed[((numCols * (r-1))/2) + c] && isDown) {
-        unsigned long pressTime = millis() - pressStart[(numCols * (r-1)/2) + c]; //fetch value from previous row
+      if (isConnected && !pressed[midiFromColumnRow(c, r-1)] && isDown) {
+        unsigned long pressTime = millis() - pressStart[midiFromColumnRow(c, r-1)]; //fetch value from previous row
         float f = (1 - (float)pressTime / (float)maxPressTime);
         int velocity = f * (maxVelocity - minVelocity) + minVelocity;
         if (debug) {
@@ -130,13 +137,13 @@ void loop() {
           Serial.println(pressTime);
           Serial.print("f: ");
           Serial.println(f);
-          Serial.print("... calculating (numCols * (r-1)/2)) + c: ");
-          Serial.println((numCols * (r-1)/2) + c);
+          Serial.print("... calculating (fully pressed)");
+          Serial.println(midiFromColumnRow(c, r-1));
           
         }
-        pressed[(numCols * (r-1)/2) + c] = true; // subtract one from the row value so that we only use the FI rows.  The SI rows (even numbered) are therefore unused.  There must be a better way to do this.
+        pressed[midiFromColumnRow(c, r-1)] = true; // subtract one from the row value so that we only use the FI rows.  The SI rows (even numbered) are therefore unused.  There must be a better way to do this.
         if (pressTime <= maxPressTime) { // min velocity?
-          int midi = (numCols * (r-1)/2) + c + 21; // Lowest note should be 21 (A0)?
+          int midi = midiFromColumnRow(c, r-1) + 21; // Lowest note should be 21 (A0)?
 
           noteOn(midiChannel, midi, velocity);
 //          delay(20);
@@ -155,8 +162,8 @@ void loop() {
 
       // key is now fully unpressed
       if (!isConnected && isPressed && !isDown) {
-        pressed[(numCols * (r/2)) + c] = false;
-        int midi = (numCols * (r/2)) + c + 21; // Lowest note should be 21 (A0)?  // probably shouldn't declare the same variable twice, to save memory
+        pressed[midiFromColumnRow(c, r)] = false;
+        int midi = midiFromColumnRow(c, r) + 21; // Lowest note should be 21 (A0)?  // probably shouldn't declare the same variable twice, to save memory
 
         noteOff(midiChannel, midi, 0);
 //        delay(2000);
@@ -171,7 +178,7 @@ void loop() {
       }
           // key is unpressed => may include keypresses that have started but did not go down
       if (!isConnected && !isDown) {
-        pressStart[(numCols * (r/2)) + c] = 0; // reset time when key is released completely
+        pressStart[midiFromColumnRow(c, r)] = 0; // reset time when key is released completely
       }
     }
     // Don't need the below line because the mux is controlling our column pins
@@ -183,7 +190,7 @@ void loop() {
 void noteOn(byte channel, byte pitch, byte velocity) {
 //  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
 //  MidiUSB.sendMIDI(noteOn);
-    if( pitch > 21) {
+    if( pitch >= 21) {
           MIDI.sendNoteOn(pitch, velocity, channel);
     }
 }
