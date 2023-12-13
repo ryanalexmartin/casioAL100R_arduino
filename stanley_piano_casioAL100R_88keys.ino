@@ -1,4 +1,5 @@
 #include <MIDI.h>
+#include <math.h>
 MIDI_CREATE_DEFAULT_INSTANCE();
 
 // Column Mux
@@ -16,11 +17,21 @@ MIDI_CREATE_DEFAULT_INSTANCE();
 #define MUX_2_OUT_PIN 9
 #define MUX_3_OUT_PIN 10
 
+#define SUSTAIN_PEDAL A0
+#define SOSTENUTO_PEDAL A1
+#define SOFT_PEDAL A2
+
 bool debug = 0;
-int maxPressTime = 100;
+int maxPressTime = 150;
 int minVelocity = 8;
 int maxVelocity = 127;
 int midiChannel = 1;
+
+bool sustainPedalOn = false;
+bool softPedalOn = false;
+bool sostenutoPedalOn = false;
+
+float exponent = 3.2;
 
 const int numRows = 22;
 const int numCols = 8;  // Now we have 8 columns
@@ -45,39 +56,43 @@ void setRowMux(int channel) {
 }
 
 int readMux(int row) {
-   setRowMux(row % 8);
-   int val;
+  setRowMux(row % 8);
+  int val;
 
   if (row < 8) { // rows 0-7 on MUX1
     val = digitalRead(MUX_1_OUT_PIN);
-//    Serial.print("Reading row ");
-//    Serial.print(row);
-//    Serial.print(": ");
-//    Serial.println(val);
-//    delay(200);
+    //    Serial.print("Reading row ");
+    //    Serial.print(row);
+    //    Serial.print(": ");
+    //    Serial.println(val);
+    //    delay(200);
   } else if (row < 16) { // rows 8-15 on MUX2
     val = digitalRead(MUX_2_OUT_PIN);
   } else { // rows 16-21 on MUX3
     val = digitalRead(MUX_3_OUT_PIN);
   }
-  
+
   return val;
 }
 
 int midiFromColumnRow(int c, int r) {
   // subtract by one for SI
-  int midi = (numCols * (r/2)) + c;
+  int midi = (numCols * (r / 2)) + c;
   return midi;
 }
 
 
 void setup() {
-  if(debug) {
+  if (debug) {
     Serial.begin(9600);
   }
   else {
-      MIDI.begin(4);                      // Launch MIDI and listen to channel 4
+    MIDI.begin(4);                      // Launch MIDI and listen to channel 4
   }
+
+  pinMode(SUSTAIN_PEDAL, INPUT);
+  pinMode(SOFT_PEDAL, INPUT);
+  pinMode(SOSTENUTO_PEDAL, INPUT);
 
   pinMode(S0_PIN, OUTPUT);
   pinMode(S1_PIN, OUTPUT);
@@ -95,25 +110,53 @@ void setup() {
 }
 
 void loop() {
+  // sustain pedal
+  if (digitalRead(SUSTAIN_PEDAL) == HIGH && sustainPedalOn) {
+    MIDI.sendControlChange(64, 127, 1);
+    sustainPedalOn = false;
+  }
+  else if (digitalRead(SUSTAIN_PEDAL) == LOW && !sustainPedalOn) {
+    MIDI.sendControlChange(64, 0, 1); // sustain=64
+    sustainPedalOn = true;
+  }
+  // soft pedal
+  if (digitalRead(SOFT_PEDAL) == HIGH && softPedalOn) {
+    MIDI.sendControlChange(67, 127, 1);
+    softPedalOn = false;
+  }
+  else if (digitalRead(SOFT_PEDAL) == LOW && !softPedalOn) {
+    MIDI.sendControlChange(67, 0, 1); // soft=67
+    softPedalOn = true;
+  }
+  // sostenuto pedal
+  if (digitalRead(SOSTENUTO_PEDAL) == HIGH && sostenutoPedalOn) {
+    MIDI.sendControlChange(66, 127, 1);
+    sostenutoPedalOn = false;
+  }
+  else if (digitalRead(SOSTENUTO_PEDAL) == LOW && !sostenutoPedalOn) {
+    MIDI.sendControlChange(66, 0, 1); // sostenuto=66
+    sostenutoPedalOn = true;
+  }
+
   for (int c = 0; c < numCols; ++c) {
-  //    Serial.print("Reading column ");
-  //    Serial.print(c);
-  //    Serial.println(": ");
-      setMux(c);  // select the current column with the multiplexer
-      digitalWrite(COLUMN_CONTROL_PIN, LOW);  // set selected column to LOW
+    //    Serial.print("Reading column ");
+    //    Serial.print(c);
+    //    Serial.println(": ");
+    setMux(c);  // select the current column with the multiplexer
+    digitalWrite(COLUMN_CONTROL_PIN, LOW);  // set selected column to LOW
 
     for (int r = 0; r < numRows; ++r) {
-//      bool isConnected = digitalRead(rows[r]) == LOW;
+      //      bool isConnected = digitalRead(rows[r]) == LOW;
       bool isConnected = readMux(r) == LOW;
-//      if(debug && isConnected) {
-//        Serial.print("Key connected: ");
-//        Serial.print(c);
-//        Serial.print("_");
-//        Serial.print(r);
-//        Serial.println(" ");
-//      }
+      //      if(debug && isConnected) {
+      //        Serial.print("Key connected: ");
+      //        Serial.print(c);
+      //        Serial.print("_");
+      //        Serial.print(r);
+      //        Serial.println(" ");
+      //      }
       bool isDown = r % 2 == 1;  // if r is odd, it's an SI (second input).  Remember that we start at 0
-      bool isPressed = pressed[(numCols * (r/2)) + c] == true;
+      bool isPressed = pressed[(numCols * (r / 2)) + c] == true;
 
       // keypress starts
 
@@ -128,26 +171,27 @@ void loop() {
       }
 
       // key is now fully pressed
-      if (isConnected && !pressed[midiFromColumnRow(c, r-1)] && isDown) {
-        unsigned long pressTime = millis() - pressStart[midiFromColumnRow(c, r-1)]; //fetch value from previous row
+      if (isConnected && !pressed[midiFromColumnRow(c, r - 1)] && isDown) {
+        unsigned long pressTime = millis() - pressStart[midiFromColumnRow(c, r - 1)]; //fetch value from previous row
         float f = (1 - (float)pressTime / (float)maxPressTime);
-        int velocity = f * (maxVelocity - minVelocity) + minVelocity;
+        float curvedF = pow(f, exponent);
+        int velocity = curvedF * (maxVelocity - minVelocity) + minVelocity;
         if (debug) {
           Serial.print("done pressing, press time: ");
           Serial.println(pressTime);
           Serial.print("f: ");
           Serial.println(f);
           Serial.print("... calculating (fully pressed)");
-          Serial.println(midiFromColumnRow(c, r-1));
-          
+          Serial.println(midiFromColumnRow(c, r - 1));
+
         }
-        pressed[midiFromColumnRow(c, r-1)] = true; // subtract one from the row value so that we only use the FI rows.  The SI rows (even numbered) are therefore unused.  There must be a better way to do this.
+        pressed[midiFromColumnRow(c, r - 1)] = true; // subtract one from the row value so that we only use the FI rows.  The SI rows (even numbered) are therefore unused.  There must be a better way to do this.
         if (pressTime <= maxPressTime) { // min velocity?
-          int midi = midiFromColumnRow(c, r-1) + 21; // Lowest note should be 21 (A0)?
+          int midi = midiFromColumnRow(c, r - 1) + 21; // Lowest note should be 21 (A0)?
 
           noteOn(midiChannel, midi, velocity);
-//          delay(20);
-//          MidiUSB.flush();
+          //          delay(20);
+          //          MidiUSB.flush();
           if (debug) {
             Serial.print("Row: ");
             Serial.println(r);
@@ -166,8 +210,8 @@ void loop() {
         int midi = midiFromColumnRow(c, r) + 21; // Lowest note should be 21 (A0)?  // probably shouldn't declare the same variable twice, to save memory
 
         noteOff(midiChannel, midi, 0);
-//        delay(2000);
-//        MidiUSB.flush();
+        //        delay(2000);
+        //        MidiUSB.flush();
         if (debug) {
           Serial.print("Row: ");
           Serial.println(r);
@@ -176,27 +220,27 @@ void loop() {
           Serial.println(" ");
         }
       }
-          // key is unpressed => may include keypresses that have started but did not go down
+      // key is unpressed => may include keypresses that have started but did not go down
       if (!isConnected && !isDown) {
         pressStart[midiFromColumnRow(c, r)] = 0; // reset time when key is released completely
       }
     }
     // Don't need the below line because the mux is controlling our column pins
-//    digitalWrite(cols[c], HIGH); // Deactivate the current column before moving to next
+    //    digitalWrite(cols[c], HIGH); // Deactivate the current column before moving to next
     digitalWrite(COLUMN_CONTROL_PIN, HIGH);  // set selected column back to HIGH before moving to the next
   }
 }
 
 void noteOn(byte channel, byte pitch, byte velocity) {
-//  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
-//  MidiUSB.sendMIDI(noteOn);
-    if( pitch >= 21) {
-          MIDI.sendNoteOn(pitch, velocity, channel);
-    }
+  //  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
+  //  MidiUSB.sendMIDI(noteOn);
+  if ( pitch >= 21) {
+    MIDI.sendNoteOn(pitch, velocity, channel);
+  }
 }
 
 void noteOff(byte channel, byte pitch, byte velocity) {
-//  midiEventPacket_t noteOff = {0x08, 0x80 | channel, pitch, velocity};
-//  MidiUSB.sendMIDI(noteOff);
-    MIDI.sendNoteOff(pitch, 0, channel);
+  //  midiEventPacket_t noteOff = {0x08, 0x80 | channel, pitch, velocity};
+  //  MidiUSB.sendMIDI(noteOff);
+  MIDI.sendNoteOff(pitch, 0, channel);
 }
