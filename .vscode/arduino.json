@@ -1,0 +1,5 @@
+{
+    "board": "arduino:avr:uno",
+    "sketch": "stanley_piano_casioAL100R_88keys.ino",
+    "port": "/dev/tty.usbmodem1101"
+}
